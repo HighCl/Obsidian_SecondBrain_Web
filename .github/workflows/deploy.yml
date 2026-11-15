@@ -1,0 +1,80 @@
+name: Deploy Quartz wiki
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,17,27,37,47,57 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quartz-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: jackyzha0/quartz
+          ref: 2ec28ddd04984d4827b5e1718a9d85f20eced38a
+          path: quartz-engine
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: quartz-engine/package-lock.json
+      - name: Prepare Quartz
+        working-directory: quartz-engine
+        run: |
+          cp ../quartz.config.yaml ../stage.mjs .
+          npm ci
+      - uses: actions/checkout@v6
+        with:
+          repository: HighCl/Obsidian_SecondBrain
+          ref: main
+          path: vault
+          ssh-key: ${{ secrets.QUARTZ_SOURCE_KEY }}
+          persist-credentials: false
+      - name: Select tagged notes
+        working-directory: quartz-engine
+        run: |
+          node stage.mjs ../vault staged-content
+          rm -r -- ../vault
+      - name: Build Quartz
+        working-directory: quartz-engine
+        run: npx quartz build --directory staged-content
+      - uses: actions/upload-pages-artifact@v3
+        id: upload
+        with:
+          path: quartz-engine/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Remove the temporary Pages artifact
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
